@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Tsinghua Newetds PDF Downloader
-// @name:zh-CN   清华学位论文 PDF 下载助手
+// @name         Tsinghua Newetds Userscript
+// @name:zh-CN   清华大学学位论文下载助手
 // @namespace    https://github.com/Yousa-Mirage/tsinghua-newetds-userscript
-// @version      1.1.0
+// @version      0.1.1
 // @description  Saving PDFs available in the current authorized Newetds preview session.
 // @description:zh-CN 保存当前账户有权预览的 PDF，并按“题名_作者.pdf”命名。
 // @author       Yousa-Mirage
