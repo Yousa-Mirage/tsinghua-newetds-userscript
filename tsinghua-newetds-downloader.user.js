@@ -6,6 +6,7 @@
 // @description  Saving PDFs available in the current authorized Newetds preview session.
 // @description:zh-CN 保存当前账户有权预览的 PDF，并按“题名_作者.pdf”命名。
 // @author       Yousa-Mirage
+// @license      MIT
 // @homepageURL  https://github.com/Yousa-Mirage/tsinghua-newetds-userscript
 // @supportURL   https://github.com/Yousa-Mirage/tsinghua-newetds-userscript/issues
 // @match        https://newetds.lib.tsinghua.edu.cn/qh/paper/summary*
