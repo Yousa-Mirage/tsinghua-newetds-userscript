@@ -88,4 +88,4 @@ TODO
 
 ## 问题反馈
 
-如遇到问题，请在 GitHub Issues 中反馈。
+如遇到问题，请在 [GitHub Issues](https://github.com/Yousa-Mirage/tsinghua-newetds-userscript/issues) 中反馈。
