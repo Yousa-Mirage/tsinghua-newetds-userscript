@@ -23,13 +23,7 @@
 - [Tampermonkey](https://www.tampermonkey.net/)
 - [Violentmonkey](https://violentmonkey.github.io/)
 
-推荐[通过 Greasy Fork 安装](https://greasyfork.org/zh-CN/scripts/588207-tsinghua-newetds-userscript)。
-
-也可以从 GitHub 安装：
-
-```text
-https://raw.githubusercontent.com/Yousa-Mirage/tsinghua-newetds-userscript/main/tsinghua-newetds-downloader.user.js
-```
+推荐[通过 Greasy Fork 安装](https://greasyfork.org/zh-CN/scripts/588207-tsinghua-newetds-userscript)。也可以[从 GitHub 安装](https://raw.githubusercontent.com/Yousa-Mirage/tsinghua-newetds-userscript/main/tsinghua-newetds-downloader.user.js)。
 
 ## 使用方法
 
