@@ -23,11 +23,7 @@
 - [Tampermonkey](https://www.tampermonkey.net/)
 - [Violentmonkey](https://violentmonkey.github.io/)
 
-推荐通过 Greasy Fork 安装：
-
-```text
-Greasy Fork 脚本地址 占位
-```
+推荐[通过 Greasy Fork 安装](https://greasyfork.org/zh-CN/scripts/588207-tsinghua-newetds-userscript)。
 
 也可以从 GitHub 安装：
 
@@ -84,7 +80,7 @@ https://raw.githubusercontent.com/Yousa-Mirage/tsinghua-newetds-userscript/main/
 
 ## 许可证状态
 
-TODO
+MIT
 
 ## 问题反馈
 
