@@ -18,8 +18,8 @@
 // ==/UserScript==
 
 (() => {
+	const nativeFetch = window.fetch;
 	const DB_KEY = "tned-lite:db";
-	const MODE_KEY = "tned-lite:mode";
 	const TTL = 6 * 60 * 60 * 1000;
 	const log = (...args) => console.log("[TNED Lite]", ...args);
 
@@ -40,11 +40,6 @@
 	};
 
 	const writeDB = (db) => localStorage.setItem(DB_KEY, JSON.stringify(db));
-
-	const mode = () =>
-		["ask", "save", "no-save"].includes(localStorage.getItem(MODE_KEY))
-			? localStorage.getItem(MODE_KEY)
-			: "ask";
 
 	const later = (fn) =>
 		document.readyState === "loading"
@@ -71,50 +66,150 @@
 		}
 	};
 
-	function addModeButton() {
-		later(() => {
-			const labels = {
-				ask: "询问",
-				save: "总是保存",
-				"no-save": "不保存",
-			};
+	const b64 = (value) =>
+		Uint8Array.from(atob(value || ""), (char) => char.charCodeAt(0));
 
-			const order = ["ask", "save", "no-save"];
-			const button = document.createElement("button");
+	const isPdf = (buffer) => {
+		const bytes = new Uint8Array(
+			buffer,
+			0,
+			Math.min(buffer.byteLength, 1024),
+		);
 
-			const refresh = () => {
-				button.textContent = `PDF：${labels[mode()]}`;
-				button.title = "点击切换：询问 → 总是保存 → 不保存";
-			};
+		for (let i = 0; i <= bytes.length - 5; i++) {
+			if (
+				bytes[i] === 37 &&
+				bytes[i + 1] === 80 &&
+				bytes[i + 2] === 68 &&
+				bytes[i + 3] === 70 &&
+				bytes[i + 4] === 45
+			) {
+				return true;
+			}
+		}
 
-			button.style.cssText = [
-				"position:fixed",
-				"left:12px",
-				"bottom:12px",
-				"z-index:2147483647",
-				"padding:6px 9px",
-				"border:1px solid #aaa",
-				"border-radius:6px",
-				"background:#fff",
-				"color:#333",
-				"cursor:pointer",
-				"font:12px Arial",
-				"box-shadow:0 2px 8px #0003",
-			].join(";");
+		return false;
+	};
 
-			button.onclick = () => {
-				const next = order[(order.indexOf(mode()) + 1) % order.length];
+	async function decrypt(buffer, url, iv, tag) {
+		/*
+		 * 没有加密响应头时，直接检查是否已经是 PDF。
+		 */
+		if (!iv || !tag) {
+			if (isPdf(buffer)) return buffer;
 
-				localStorage.setItem(MODE_KEY, next);
-				refresh();
-			};
+			throw new Error("响应既没有 PDF 文件头，也没有加密参数");
+		}
 
-			refresh();
-			document.body.appendChild(button);
-		});
+		const sign = requestUrl(url).searchParams.get("proxySign");
+
+		if (!sign) {
+			throw new Error("PDF 请求中没有 proxySign");
+		}
+
+		/*
+		 * 使用当前登录会话请求临时解密密钥。
+		 */
+		const keyResponse = await nativeFetch.call(
+			window,
+			`/api/getTempDecryptKey?proxySign=${encodeURIComponent(sign)}`,
+			{
+				credentials: "include",
+			},
+		);
+
+		if (!keyResponse.ok) {
+			throw new Error(`临时密钥请求失败：${keyResponse.status}`);
+		}
+
+		const key = (await keyResponse.json())?.tempKey;
+
+		if (!key) {
+			throw new Error("临时密钥响应中没有 tempKey");
+		}
+
+		/*
+		 * 网站将 AES-GCM 认证标签放在响应头中，
+		 * 解密前需要把认证标签拼接到密文末尾。
+		 */
+		const cipher = new Uint8Array(buffer);
+		const authTag = b64(tag);
+
+		const data = new Uint8Array(cipher.length + authTag.length);
+
+		data.set(cipher);
+		data.set(authTag, cipher.length);
+
+		const cryptoKey = await crypto.subtle.importKey(
+			"raw",
+			b64(key),
+			"AES-GCM",
+			false,
+			["decrypt"],
+		);
+
+		const result = await crypto.subtle.decrypt(
+			{
+				name: "AES-GCM",
+				iv: b64(iv),
+				tagLength: 128,
+			},
+			cryptoKey,
+			data,
+		);
+
+		if (!isPdf(result)) {
+			throw new Error("解密结果不是 PDF");
+		}
+
+		return result;
 	}
 
-	addModeButton();
+
+	const fileName = ({ thesis, author }) => {
+		const name = `${thesis || "download"}${author ? `_${author}` : ""}.pdf`
+			.replace(/[\\/:*?"<>|]/g, "_")
+			.replace(/\s+/g, " ")
+			.trim();
+
+		return name.length <= 180 ? name : `${name.slice(0, 176)}.pdf`;
+	};
+
+	const download = (blob, name) => {
+		const url = URL.createObjectURL(blob);
+
+		const link = Object.assign(document.createElement("a"), {
+			href: url,
+			download: name,
+		});
+
+		(document.body || document.documentElement).appendChild(link);
+
+		link.click();
+		link.remove();
+
+		setTimeout(() => URL.revokeObjectURL(url), 60000);
+	};
+
+
+	function createDownloadButton() {
+		const button = document.createElement("button");
+
+		button.type = "button";
+		button.textContent = "下载为 PDF";
+		button.style.cssText = [
+			"padding:10px 18px",
+			"border:1px solid #1565c0",
+			"border-radius:6px",
+			"background:#1565c0",
+			"color:#fff",
+			"cursor:pointer",
+			"font:14px Arial",
+			"box-shadow:0 2px 8px #0003",
+		].join(";");
+
+		return button;
+	}
 
 	if (location.pathname.toLowerCase().startsWith("/qh/paper/summary")) {
 		runSummaryPage();
@@ -130,6 +225,7 @@
 	 */
 	function runSummaryPage() {
 		let paper = null;
+		let downloadButton = null;
 		const pendingSigns = [];
 
 		const save = () => {
@@ -171,7 +267,6 @@
 		/*
 		 * 拦截 fetch。
 		 */
-		const nativeFetch = window.fetch;
 
 		if (typeof nativeFetch === "function") {
 			window.fetch = async function (...args) {
@@ -239,7 +334,7 @@
 			const dbCode = params.get("dbCode");
 			const sysId = params.get("sysId");
 
-			if (thesis && author && dbCode && sysId) {
+			if (!paper && thesis && author && dbCode && sysId) {
 				paper = {
 					thesis,
 					author,
@@ -248,13 +343,101 @@
 				};
 
 				save();
-				clearInterval(timer);
 
 				log("论文信息已缓存", paper);
+			}
+
+			const preview = document.querySelector('.operaBox a[onclick*="preview("]');
+
+			if (paper && preview && !downloadButton) {
+				downloadButton = addSummaryDownloadButton(preview, paper);
+				clearInterval(timer);
 			}
 		}, 200);
 
 		setTimeout(() => clearInterval(timer), 15000);
+	}
+
+	function addSummaryDownloadButton(preview, paper) {
+		const button = createDownloadButton();
+		button.style.marginLeft = "12px";
+		preview.after(button);
+		let files = null;
+		let select = null;
+
+		button.onclick = async () => {
+			if (button.disabled) return;
+
+			button.disabled = true;
+			button.textContent = "正在准备…";
+			button.title = "";
+
+			try {
+				if (!files) {
+					const response = await nativeFetch.call(window, "/api/fileProxy", {
+						method: "POST",
+						credentials: "include",
+						body: new URLSearchParams({
+							action: "getToken",
+							dbCode: paper.dbCode,
+							recordId: paper.sysId,
+						}),
+					});
+
+					if (!response.ok) throw new Error(`预览地址请求失败：${response.status}`);
+
+					const payload = await response.json();
+					const rows = Array.isArray(payload?.data) ? payload.data : [];
+					files = rows.filter((row) => row?.encryptPreviewUrl);
+
+					if (!files.length) {
+						files = null;
+						throw new Error(payload?.data?.msg || payload?.msg || "当前账户没有可下载的预览文件");
+					}
+
+					if (files.length > 1) {
+						select = document.createElement("select");
+						select.setAttribute("aria-label", "选择要下载的文件");
+						files.forEach((file, index) => {
+							const option = document.createElement("option");
+							option.value = String(index);
+							option.textContent = file.fileName || `文件 ${index + 1}`;
+							select.appendChild(option);
+						});
+						button.before(select);
+						button.title = "请选择文件后点击下载";
+						return;
+					}
+				}
+
+				const file = files[select ? Number(select.value) : 0];
+				const url = `/api/getPdfStream?proxySign=${encodeURIComponent(file.encryptPreviewUrl)}`;
+				const response = await nativeFetch.call(window, url, { credentials: "include" });
+
+				if (!response.ok) throw new Error(`PDF 请求失败：${response.status}`);
+
+				const pdf = await decrypt(
+					await response.arrayBuffer(),
+					url,
+					response.headers.get("X-PDF-IV") || "",
+					response.headers.get("X-PDF-TAG") || "",
+				);
+
+				download(new Blob([pdf], { type: "application/pdf" }), fileName(paper));
+			} catch (error) {
+				files = null;
+				select?.remove();
+				select = null;
+				button.title = error.message;
+				console.error("[TNED Lite] 摘要页下载失败：", error);
+				button.textContent = "下载失败，点击重试";
+			} finally {
+				button.disabled = false;
+				if (button.textContent === "正在准备…") button.textContent = "下载为 PDF";
+			}
+		};
+
+		return button;
 	}
 
 	/*
@@ -262,7 +445,7 @@
 	 * 1. 截获 PDF 响应；
 	 * 2. 必要时获取临时密钥并解密；
 	 * 3. 恢复论文题名；
-	 * 4. 下载 PDF。
+	 * 4. 用户点击按钮后下载 PDF。
 	 */
 	function runViewerPage() {
 		let resolvePdf;
@@ -272,7 +455,6 @@
 			resolvePdf = resolve;
 		});
 
-		const nativeFetch = window.fetch;
 
 		const decode = (value) => {
 			let result = String(value || "");
@@ -310,104 +492,6 @@
 			}
 		};
 
-		const b64 = (value) =>
-			Uint8Array.from(atob(value || ""), (char) => char.charCodeAt(0));
-
-		const isPdf = (buffer) => {
-			const bytes = new Uint8Array(
-				buffer,
-				0,
-				Math.min(buffer.byteLength, 1024),
-			);
-
-			for (let i = 0; i <= bytes.length - 5; i++) {
-				if (
-					bytes[i] === 37 &&
-					bytes[i + 1] === 80 &&
-					bytes[i + 2] === 68 &&
-					bytes[i + 3] === 70 &&
-					bytes[i + 4] === 45
-				) {
-					return true;
-				}
-			}
-
-			return false;
-		};
-
-		async function decrypt(buffer, url, iv, tag) {
-			/*
-			 * 没有加密响应头时，直接检查是否已经是 PDF。
-			 */
-			if (!iv || !tag) {
-				if (isPdf(buffer)) return buffer;
-
-				throw new Error("响应既没有 PDF 文件头，也没有加密参数");
-			}
-
-			const sign = proxySign(url);
-
-			if (!sign) {
-				throw new Error("PDF 请求中没有 proxySign");
-			}
-
-			/*
-			 * 使用当前登录会话请求临时解密密钥。
-			 */
-			const keyResponse = await nativeFetch.call(
-				window,
-				`/api/getTempDecryptKey?proxySign=${encodeURIComponent(sign)}`,
-				{
-					credentials: "include",
-				},
-			);
-
-			if (!keyResponse.ok) {
-				throw new Error(`临时密钥请求失败：${keyResponse.status}`);
-			}
-
-			const key = (await keyResponse.json())?.tempKey;
-
-			if (!key) {
-				throw new Error("临时密钥响应中没有 tempKey");
-			}
-
-			/*
-			 * 网站将 AES-GCM 认证标签放在响应头中，
-			 * 解密前需要把认证标签拼接到密文末尾。
-			 */
-			const cipher = new Uint8Array(buffer);
-			const authTag = b64(tag);
-
-			const data = new Uint8Array(cipher.length + authTag.length);
-
-			data.set(cipher);
-			data.set(authTag, cipher.length);
-
-			const cryptoKey = await crypto.subtle.importKey(
-				"raw",
-				b64(key),
-				"AES-GCM",
-				false,
-				["decrypt"],
-			);
-
-			const result = await crypto.subtle.decrypt(
-				{
-					name: "AES-GCM",
-					iv: b64(iv),
-					tagLength: 128,
-				},
-				cryptoKey,
-				data,
-			);
-
-			if (!isPdf(result)) {
-				throw new Error("解密结果不是 PDF");
-			}
-
-			return result;
-		}
 
 		async function capture(buffer, url, status, iv, tag) {
 			if (finished || !buffer?.byteLength) return;
@@ -536,44 +620,26 @@
 			};
 		};
 
-		const fileName = ({ thesis, author }) => {
-			const name = `${thesis || "download"}${author ? `_${author}` : ""}.pdf`
-				.replace(/[\\/:*?"<>|]/g, "_")
-				.replace(/\s+/g, " ")
-				.trim();
-
-			return name.length <= 180 ? name : `${name.slice(0, 176)}.pdf`;
-		};
-
-		const download = (blob, name) => {
-			const url = URL.createObjectURL(blob);
-
-			const link = Object.assign(document.createElement("a"), {
-				href: url,
-				download: name,
-			});
-
-			(document.body || document.documentElement).appendChild(link);
-
-			link.click();
-			link.remove();
-
-			setTimeout(() => URL.revokeObjectURL(url), 60000);
-		};
 
 		/*
-		 * 同时等待 PDF 和论文信息。
+		 * PDF 和论文信息就绪后启用按钮，仅在用户点击时下载。
 		 */
-		(async () => {
-			if (mode() === "no-save") return;
+		later(async () => {
+			const button = createDownloadButton();
+			button.title = "等待 PDF 加载";
+			button.disabled = true;
+			button.style.cssText += ";position:fixed;right:12px;bottom:12px;z-index:2147483647";
+			button.style.cursor = "wait";
+
+			document.body.appendChild(button);
 
 			const [blob, paper] = await Promise.all([pdfReady, paperInfo()]);
-
 			const name = fileName(paper);
 
-			if (mode() === "save" || confirm(`保存 PDF？\n${name}`)) {
-				download(blob, name);
-			}
-		})();
+			button.onclick = () => download(blob, name);
+			button.title = `下载 ${name}`;
+			button.style.cursor = "pointer";
+			button.disabled = false;
+		});
 	}
 })();
