@@ -14,7 +14,6 @@
 // @run-at       document-start
 // @grant        none
 // @sandbox      raw
-// @inject-into  page
 // ==/UserScript==
 
 (() => {
@@ -66,6 +65,70 @@
 		}
 	};
 
+	// 旁路读取响应，处理失败时仍将网站原始响应交还给页面。
+	function interceptResponses(path, onFetch, onXHR) {
+		const report = (error) =>
+			console.error("[TNED Lite] 读取响应失败：", error);
+
+		if (typeof nativeFetch === "function") {
+			window.fetch = async function (...args) {
+				const response = await nativeFetch.apply(this, args);
+
+				if (pathIs(args[0], path)) {
+					try {
+						Promise.resolve(
+							onFetch(response.clone(), requestUrl(args[0]).href),
+						).catch(report);
+					} catch (error) {
+						report(error);
+					}
+				}
+
+				return response;
+			};
+		}
+
+		const urls = new WeakMap();
+		const { open, send } = XMLHttpRequest.prototype;
+
+		XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+			urls.set(this, url);
+			return open.call(this, method, url, ...rest);
+		};
+
+		XMLHttpRequest.prototype.send = function (...args) {
+			const url = urls.get(this);
+
+			if (pathIs(url, path)) {
+				this.addEventListener(
+					"loadend",
+					() => {
+						Promise.resolve()
+							.then(() => onXHR(this, requestUrl(url).href))
+							.catch(report);
+					},
+					{ once: true },
+				);
+			}
+
+			return send.apply(this, args);
+		};
+	}
+
+	const previewFiles = (payload) => {
+		const rows = Array.isArray(payload?.data)
+			? payload.data
+			: Array.isArray(payload)
+				? payload
+				: [];
+
+		return rows.filter(
+			(row) =>
+				typeof row?.encryptPreviewUrl === "string" &&
+				row.encryptPreviewUrl.trim(),
+		);
+	};
+
 	const b64 = (value) =>
 		Uint8Array.from(atob(value || ""), (char) => char.charCodeAt(0));
 
@@ -87,16 +150,7 @@
 		return false;
 	};
 
-	async function decrypt(buffer, url, iv, tag) {
-		/*
-		 * 没有加密响应头时，直接检查是否已经是 PDF。
-		 */
-		if (!iv || !tag) {
-			if (isPdf(buffer)) return buffer;
-
-			throw new Error("响应既没有 PDF 文件头，也没有加密参数");
-		}
-
+	async function fetchTempKey(url) {
 		const sign = requestUrl(url).searchParams.get("proxySign");
 
 		if (!sign) {
@@ -123,6 +177,21 @@
 		if (!key) {
 			throw new Error("临时密钥响应中没有 tempKey");
 		}
+
+		return key;
+	}
+
+	async function decrypt(buffer, url, iv, tag, tempKey) {
+		/*
+		 * 没有加密响应头时，直接检查是否已经是 PDF。
+		 */
+		if (!iv || !tag) {
+			if (isPdf(buffer)) return buffer;
+
+			throw new Error("响应既没有 PDF 文件头，也没有加密参数");
+		}
+
+		const key = tempKey || (await fetchTempKey(url));
 
 		/*
 		 * 网站将 AES-GCM 认证标签放在响应头中，
@@ -159,6 +228,52 @@
 		}
 
 		return result;
+	}
+
+	async function fetchPreviewFiles(paper) {
+		const response = await nativeFetch.call(window, "/api/fileProxy", {
+			method: "POST",
+			credentials: "include",
+			body: new URLSearchParams({
+				action: "getToken",
+				dbCode: paper.dbCode,
+				recordId: paper.sysId,
+			}),
+		});
+
+		if (!response.ok) throw new Error(`预览地址请求失败：${response.status}`);
+
+		const payload = await response.json();
+		const files = previewFiles(payload);
+
+		if (!files.length) {
+			throw new Error(
+				payload?.data?.msg || payload?.msg || "当前账户没有可下载的预览文件",
+			);
+		}
+
+		return files;
+	}
+
+	async function fetchPdf(file) {
+		const url = `/api/getPdfStream?proxySign=${encodeURIComponent(file.encryptPreviewUrl.trim())}`;
+		// 密钥请求同时准备当前会话，必须在 PDF 流请求之前完成。
+		const key = await fetchTempKey(url);
+		const response = await nativeFetch.call(window, url, {
+			credentials: "include",
+		});
+
+		if (!response.ok) throw new Error(`PDF 请求失败：${response.status}`);
+
+		const pdf = await decrypt(
+			await response.arrayBuffer(),
+			url,
+			response.headers.get("X-PDF-IV") || "",
+			response.headers.get("X-PDF-TAG") || "",
+			key,
+		);
+
+		return new Blob([pdf], { type: "application/pdf" });
 	}
 
 	const fileName = ({ thesis, author }) => {
@@ -242,15 +357,9 @@
 		};
 
 		const capture = (payload) => {
-			const rows = Array.isArray(payload?.data)
-				? payload.data
-				: Array.isArray(payload)
-					? payload
-					: [];
-
-			const signs = rows
-				.map((row) => String(row?.encryptPreviewUrl || "").trim())
-				.filter(Boolean);
+			const signs = previewFiles(payload).map((row) =>
+				row.encryptPreviewUrl.trim(),
+			);
 
 			if (!signs.length) return;
 
@@ -258,87 +367,27 @@
 			save();
 		};
 
-		/*
-		 * 拦截 fetch。
-		 */
-
-		if (typeof nativeFetch === "function") {
-			window.fetch = async function (...args) {
-				const response = await nativeFetch.apply(this, args);
-
-				if (pathIs(args[0], "/api/fileproxy")) {
-					response
-						.clone()
-						.json()
-						.then(capture)
-						.catch(() => {});
-				}
-
-				return response;
-			};
-		}
-
-		/*
-		 * 拦截 XMLHttpRequest。
-		 */
-		const open = XMLHttpRequest.prototype.open;
-		const send = XMLHttpRequest.prototype.send;
-
-		XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-			this.__tnedUrl = url;
-
-			return open.call(this, method, url, ...rest);
-		};
-
-		XMLHttpRequest.prototype.send = function (...args) {
-			if (pathIs(this.__tnedUrl, "/api/fileproxy")) {
-				this.addEventListener("loadend", () => {
-					try {
-						capture(
-							this.responseType === "json"
-								? this.response
-								: JSON.parse(this.responseText),
-						);
-					} catch {
-						// 忽略非 JSON 响应。
-					}
-				});
-			}
-
-			return send.apply(this, args);
-		};
+		interceptResponses(
+			"/api/fileproxy",
+			async (response) => capture(await response.json()),
+			(xhr) =>
+				capture(
+					xhr.responseType === "json"
+						? xhr.response
+						: JSON.parse(xhr.responseText),
+				),
+		);
 
 		/*
 		 * 页面可能异步渲染，因此短暂轮询题名和作者。
 		 */
 		const timer = setInterval(() => {
-			const params = new URLSearchParams(location.search);
-
-			const thesis = document.querySelector("h1.cn")?.textContent.trim();
-
-			const author = [...document.querySelectorAll("span")]
-				.map((span) =>
-					span.textContent
-						.trim()
-						.match(/^作者[:：]\s*(.+)$/)?.[1]
-						?.trim(),
-				)
-				.find(Boolean);
-
-			const dbCode = params.get("dbCode");
-			const sysId = params.get("sysId");
-
-			if (!paper && thesis && author && dbCode && sysId) {
-				paper = {
-					thesis,
-					author,
-					dbCode,
-					sysId,
-				};
-
-				save();
-
-				log("论文信息已缓存", paper);
+			if (!paper) {
+				paper = readSummaryPaper();
+				if (paper) {
+					save();
+					log("论文信息已缓存", paper);
+				}
 			}
 
 			const preview = document.querySelector(
@@ -354,10 +403,29 @@
 		setTimeout(() => clearInterval(timer), 15000);
 	}
 
+	function readSummaryPaper() {
+		const params = new URLSearchParams(location.search);
+		const thesis = document.querySelector("h1.cn")?.textContent.trim();
+		const dbCode = params.get("dbCode");
+		const sysId = params.get("sysId");
+
+		if (!thesis || !dbCode || !sysId) return null;
+
+		for (const span of document.querySelectorAll("span")) {
+			const author = span.textContent
+				.trim()
+				.match(/^作者[:：]\s*(.+)$/)?.[1]
+				?.trim();
+			if (author) return { thesis, author, dbCode, sysId };
+		}
+
+		return null;
+	}
+
 	function addSummaryDownloadButton(preview, paper) {
 		const button = createDownloadButton();
-		button.style.marginLeft = "12px";
-		preview.after(button);
+		button.style.marginRight = "12px";
+		preview.before(button);
 		let files = null;
 		let select = null;
 
@@ -365,37 +433,13 @@
 			if (button.disabled) return;
 
 			button.disabled = true;
+			let label = "下载为 PDF";
 			button.textContent = "正在准备…";
 			button.title = "";
 
 			try {
 				if (!files) {
-					const response = await nativeFetch.call(window, "/api/fileProxy", {
-						method: "POST",
-						credentials: "include",
-						body: new URLSearchParams({
-							action: "getToken",
-							dbCode: paper.dbCode,
-							recordId: paper.sysId,
-						}),
-					});
-
-					if (!response.ok) {
-						throw new Error(`预览地址请求失败：${response.status}`);
-					}
-
-					const payload = await response.json();
-					const rows = Array.isArray(payload?.data) ? payload.data : [];
-					files = rows.filter((row) => row?.encryptPreviewUrl);
-
-					if (!files.length) {
-						files = null;
-						throw new Error(
-							payload?.data?.msg ||
-								payload?.msg ||
-								"当前账户没有可下载的预览文件",
-						);
-					}
+					files = await fetchPreviewFiles(paper);
 
 					if (files.length > 1) {
 						select = document.createElement("select");
@@ -413,32 +457,17 @@
 				}
 
 				const file = files[select ? Number(select.value) : 0];
-				const url = `/api/getPdfStream?proxySign=${encodeURIComponent(file.encryptPreviewUrl)}`;
-				const response = await nativeFetch.call(window, url, {
-					credentials: "include",
-				});
-
-				if (!response.ok) throw new Error(`PDF 请求失败：${response.status}`);
-
-				const pdf = await decrypt(
-					await response.arrayBuffer(),
-					url,
-					response.headers.get("X-PDF-IV") || "",
-					response.headers.get("X-PDF-TAG") || "",
-				);
-
-				download(new Blob([pdf], { type: "application/pdf" }), fileName(paper));
+				download(await fetchPdf(file), fileName(paper));
 			} catch (error) {
 				files = null;
 				select?.remove();
 				select = null;
 				button.title = error.message;
 				console.error("[TNED Lite] 摘要页下载失败：", error);
-				button.textContent = "下载失败，点击重试";
+				label = "下载失败，点击重试";
 			} finally {
 				button.disabled = false;
-				if (button.textContent === "正在准备…")
-					button.textContent = "下载为 PDF";
+				button.textContent = label;
 			}
 		};
 
@@ -522,70 +551,33 @@
 			}
 		}
 
-		/*
-		 * 拦截 fetch 加载的 PDF。
-		 */
-		if (typeof nativeFetch === "function") {
-			window.fetch = async function (...args) {
-				const response = await nativeFetch.apply(this, args);
+		interceptResponses(
+			"/api/getpdfstream",
+			async (response, url) =>
+				capture(
+					await response.arrayBuffer(),
+					url,
+					response.status,
+					response.headers.get("X-PDF-IV") || "",
+					response.headers.get("X-PDF-TAG") || "",
+				),
+			async (xhr, url) => {
+				const buffer =
+					xhr.responseType === "blob"
+						? await xhr.response.arrayBuffer()
+						: xhr.responseType === "arraybuffer"
+							? xhr.response
+							: await new Blob([xhr.responseText || ""]).arrayBuffer();
 
-				if (pathIs(args[0], "/api/getpdfstream")) {
-					response
-						.clone()
-						.arrayBuffer()
-						.then((buffer) =>
-							capture(
-								buffer,
-								requestUrl(args[0]).href,
-								response.status,
-								response.headers.get("X-PDF-IV") || "",
-								response.headers.get("X-PDF-TAG") || "",
-							),
-						);
-				}
-
-				return response;
-			};
-		}
-
-		/*
-		 * 拦截 XMLHttpRequest 加载的 PDF。
-		 */
-		const open = XMLHttpRequest.prototype.open;
-		const send = XMLHttpRequest.prototype.send;
-
-		XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-			this.__tnedUrl = url;
-
-			return open.call(this, method, url, ...rest);
-		};
-
-		XMLHttpRequest.prototype.send = function (...args) {
-			if (pathIs(this.__tnedUrl, "/api/getpdfstream")) {
-				this.addEventListener("loadend", async () => {
-					try {
-						const buffer =
-							this.responseType === "blob"
-								? await this.response.arrayBuffer()
-								: this.responseType === "arraybuffer"
-									? this.response
-									: await new Blob([this.responseText || ""]).arrayBuffer();
-
-						capture(
-							buffer,
-							requestUrl(this.__tnedUrl).href,
-							this.status,
-							this.getResponseHeader("X-PDF-IV") || "",
-							this.getResponseHeader("X-PDF-TAG") || "",
-						);
-					} catch (error) {
-						console.error("[TNED Lite] 读取 XHR PDF 失败：", error);
-					}
-				});
-			}
-
-			return send.apply(this, args);
-		};
+				return capture(
+					buffer,
+					url,
+					xhr.status,
+					xhr.getResponseHeader("X-PDF-IV") || "",
+					xhr.getResponseHeader("X-PDF-TAG") || "",
+				);
+			},
+		);
 
 		/*
 		 * 根据 proxySign 查找论文信息；
