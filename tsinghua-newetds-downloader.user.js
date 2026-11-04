@@ -70,11 +70,7 @@
 		Uint8Array.from(atob(value || ""), (char) => char.charCodeAt(0));
 
 	const isPdf = (buffer) => {
-		const bytes = new Uint8Array(
-			buffer,
-			0,
-			Math.min(buffer.byteLength, 1024),
-		);
+		const bytes = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 1024));
 
 		for (let i = 0; i <= bytes.length - 5; i++) {
 			if (
@@ -345,7 +341,9 @@
 				log("论文信息已缓存", paper);
 			}
 
-			const preview = document.querySelector('.operaBox a[onclick*="preview("]');
+			const preview = document.querySelector(
+				'.operaBox a[onclick*="preview("]',
+			);
 
 			if (paper && preview && !downloadButton) {
 				downloadButton = addSummaryDownloadButton(preview, paper);
@@ -393,7 +391,9 @@
 					if (!files.length) {
 						files = null;
 						throw new Error(
-							payload?.data?.msg || payload?.msg || "当前账户没有可下载的预览文件",
+							payload?.data?.msg ||
+								payload?.msg ||
+								"当前账户没有可下载的预览文件",
 						);
 					}
 
@@ -414,7 +414,9 @@
 
 				const file = files[select ? Number(select.value) : 0];
 				const url = `/api/getPdfStream?proxySign=${encodeURIComponent(file.encryptPreviewUrl)}`;
-				const response = await nativeFetch.call(window, url, { credentials: "include" });
+				const response = await nativeFetch.call(window, url, {
+					credentials: "include",
+				});
 
 				if (!response.ok) throw new Error(`PDF 请求失败：${response.status}`);
 
@@ -435,7 +437,8 @@
 				button.textContent = "下载失败，点击重试";
 			} finally {
 				button.disabled = false;
-				if (button.textContent === "正在准备…") button.textContent = "下载为 PDF";
+				if (button.textContent === "正在准备…")
+					button.textContent = "下载为 PDF";
 			}
 		};
 
