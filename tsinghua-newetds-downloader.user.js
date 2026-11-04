@@ -165,7 +165,6 @@
 		return result;
 	}
 
-
 	const fileName = ({ thesis, author }) => {
 		const name = `${thesis || "download"}${author ? `_${author}` : ""}.pdf`
 			.replace(/[\\/:*?"<>|]/g, "_")
@@ -190,7 +189,6 @@
 
 		setTimeout(() => URL.revokeObjectURL(url), 60000);
 	};
-
 
 	function createDownloadButton() {
 		const button = document.createElement("button");
@@ -384,7 +382,9 @@
 						}),
 					});
 
-					if (!response.ok) throw new Error(`预览地址请求失败：${response.status}`);
+					if (!response.ok) {
+						throw new Error(`预览地址请求失败：${response.status}`);
+					}
 
 					const payload = await response.json();
 					const rows = Array.isArray(payload?.data) ? payload.data : [];
@@ -392,7 +392,9 @@
 
 					if (!files.length) {
 						files = null;
-						throw new Error(payload?.data?.msg || payload?.msg || "当前账户没有可下载的预览文件");
+						throw new Error(
+							payload?.data?.msg || payload?.msg || "当前账户没有可下载的预览文件",
+						);
 					}
 
 					if (files.length > 1) {
@@ -455,7 +457,6 @@
 			resolvePdf = resolve;
 		});
 
-
 		const decode = (value) => {
 			let result = String(value || "");
 
@@ -491,7 +492,6 @@
 				return decode(location.href).match(/[?&]proxySign=([^&#]+)/)?.[1] || "";
 			}
 		};
-
 
 		async function capture(buffer, url, status, iv, tag) {
 			if (finished || !buffer?.byteLength) return;
@@ -620,7 +620,6 @@
 			};
 		};
 
-
 		/*
 		 * PDF 和论文信息就绪后启用按钮，仅在用户点击时下载。
 		 */
@@ -628,7 +627,8 @@
 			const button = createDownloadButton();
 			button.title = "等待 PDF 加载";
 			button.disabled = true;
-			button.style.cssText += ";position:fixed;right:12px;bottom:12px;z-index:2147483647";
+			button.style.cssText +=
+				";position:fixed;right:12px;bottom:12px;z-index:2147483647";
 			button.style.cursor = "wait";
 
 			document.body.appendChild(button);
